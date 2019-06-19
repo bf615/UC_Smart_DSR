@@ -1,0 +1,556 @@
+model Pplan
+    uses "mmsheet", "mmxprs", "mmetc", "mmxnlp"
+    declarations
+    ! constants
+        T = 8760
+        J = 3
+        I = 8
+        GENE = 14
+        unit_t = 1
+        GEN = 1..I
+        TIME = 1..T
+        SEG = 1..J
+        RAMP_1 = {1,2,3,4,5,7,8}
+        RAMP_2 = {6}
+        MAX_T = 4
+        hours_DSR = 5
+        HOURS = 1..hours_DSR
+        perc_DSR = 0.1
+        sys_Pmax = 1800
+        f0 = 50
+        ROCOF_max = 1
+        res_time = 4
+        HOURS_wet = 4
+        HOURS_EV = 6
+        NUC = 6
+        POST_SOLVE = 1
+
+        Output = 'C:\Users\Ben\Documents\4th Year\4th Year project\FICO Xpress\Final_Models\base_EV_results.xlsx'
+
+
+    ! generator parameters
+        efficiency: array(1..I) of real ! efficiencies of each unit (%)
+        !B: array(1..I) of array(1..J) of real ! slope of segment of of piecewise output curve of unit i (£/MWh)
+        B: array(1..I) of real ! slope of segment of of piecewise output curve of unit i (£/MWh)
+        A: array(1..I) of real ! y-intersect of piecewise output curve of unit i (no load cost, £/h)
+        C_start: array(1..I) of real ! start up cost of unit i (£)
+        CAPEX: array(1..I) of real ! capital expenditure per year (£/kW/yr)
+        Pmax_in: array(1..I) of real ! maximum generator output of unit i (MW)
+        Pmin: array(1..I) of real ! minimum generator output of unit i (% of Pmax)
+        resp_ratio: array(1..I) of real !??? "Generators limited by headroom: headroom multiplied by response ratio" (ratio)
+        resp_max: array(1..I) of real ! amount of Pmax that can be provided as response (% of Pmax)
+        V_up: array(1..I) of real ! ramp up rate of unit i (% of Pmax)
+        V_dn: array(1..I) of real ! ramp down rate of unit i (% of Pmax)
+        T_up_in: array(1..I) of real ! minimum up time of unit i, input (h)
+        T_dn_in: array(1..I) of real ! minimum down time of unit i, input (h)
+        must_run: array(1..I) of real ! should the plant always run (binary)
+        emis_inc: array(1..I) of real ! incremental emissions (kg/MWh)
+        emis_NL: array(1..I) of real ! no load emissions (kgCO2)
+        emis_SU: array(1..I) of real ! start up emissions (kgCO2)
+        max_ALF: array(1..I) of real ! max annual load factor (avg load/peak load, %)
+        Hi: array(1..I) of real ! inertia constant of unit i, (s)
+
+        P_init: array(1..I) of real ! inital output of each unit i
+
+    ! initial up/down times
+        I_up_in: array(GEN) of real
+        I_dn_in: array(GEN) of real
+        I_up: array(GEN) of integer
+        I_dn: array(GEN) of integer
+
+    ! capacity of installed generation types
+        Capacity: array(1..GENE) of real ! total capacity of each installed generation type (GW)
+
+    ! hourly demand
+        Demand: array(TIME) of real ! hourly demand values (MW)
+
+    ! forecast variable
+        W: array(1..T) of real ! forecast wind generation at time t
+        S: array(1..T) of real ! forecast solar generation at time t
+
+    ! reserve contributions and requirements
+        r_up: array(1..I) of array(1..T) of mpvar ! up reserve contribution of unit i at time t
+        R_up: array(1..T) of real ! upward reserve contribution of unit i at time t
+        r_dn: array(1..I) of array(1..T) of mpvar ! down reserve contribution of unit i at time t
+        R_dn: array(1..T) of real ! downward reserve contribution of unit i at time t
+
+        R_up_new: array(1..T) of real ! downward reserve contribution of unit i at time t (calculated)
+        R_dn_new: array(1..T) of real ! downward reserve contribution of unit i at time t (calculated)
+
+! 1..MAX_T
+        N: array(1..I) of real !  switching state of generator i prior to the start of scheduling horizon, must match with N_on and N_off
+        N_on: array(1..I) of array(1..MAX_T) of integer ! number of units switched on in time intervals before t=1, must match with N and N_off
+        N_off: array(1..I) of array(1..MAX_T) of integer ! number of units switched off in time intervals before t=1, must match with N and N_on
+
+    ! for conversion to integer to work with minlist
+        T_up: array(1..I) of integer ! minimum up time of unit i (h)
+        T_dn: array(1..I) of integer ! minimum down time of unit i (h)
+
+    ! consumed variable
+        wg: array(1..T) of mpvar ! wind generation consumed
+        sg: array(1..T) of mpvar ! solar generation consumed
+    !curtailed variable
+        wc: array(1..T) of mpvar ! curtailed wind at time t
+        sc: array(1..T) of mpvar ! curtailed solar at time t
+
+
+        MC_gen: array(1..I) of array(1..T) of mpvar ! monetary cost of running each generator i at time t
+        EC_gen: array(1..I) of array(1..T) of mpvar ! emissions cost of running each generator i at time t
+
+        !res_time: array(1..T) of real ! maximum time in which reserve may be delivered upon request by the system operator. (moved to CONSTANT)
+
+
+        load_shed: array(1..T) of mpvar ! load shed at time t
+        over_slack: array(1..T) of mpvar ! over slack at time t
+
+        n: array(1..I) of array(1..T) of mpvar ! binary on-off of unit i at time t
+
+        E: array(1..I) of real ! elbow point of segment j of piecewise linear output curve of unit i
+
+        p: array(1..I) of array(1..T) of mpvar ! output of segment j of generator i at time t
+        H: array(1..I) of array(1..T) of mpvar ! start up cost of unit i at time t
+        e_H: array(1..I) of array(1..T) of mpvar ! emissions start up cost of unit i at time t
+        Pg: array(1..I) of array(1..T) of real ! total output of unit i at time t (sum across j of p(i,j,t) at given t and i)
+
+        C_shed: real ! cost of shedding 1 unit of load
+        C_over: real ! cost of spilling 1 unit of load
+
+        v_on: array(1..I) of array(1..T) of mpvar !number of units switched on at time t
+        v_off: array(1..I) of array(1..T) of mpvar !number of units switched off at time t
+
+        Pmax: array(1..I) of real ! recalculated Pmax for each gen
+        Nsynch: array(1..I) of integer ! number of ganarators of each type
+
+        temp: real ! holds a temporary value (min up/down times)
+
+        Shifted: array(1..T) of array(1..hours_DSR) of mpvar ! amounts of DEMAND(t) shifted at period t by i periods
+        Consumed: array(1..T) of mpvar ! amount of DEMAND(t) consumed at period t
+
+        !costs_t: array(1..T) of mpvar ! hourly costs
+        !emissions_t: array(1..T) of mpvar ! hourly emissions
+        !emissions_temissions_tot: mpvar ! total yearly emissions
+
+        W_cap: real ! total Wind installed capacity
+        S_cap: real ! total Solar installed capacity
+
+        W_sd_half: real ! wind half hour standard variance
+        W_sd_four: real ! wind four hour standard variance
+        S_sd_half: real ! solar half hour standard variance
+        S_sd_four: real ! solar four hour standard variance
+
+        F_up: array(1..I) of real ! generator max upwards frequency response contribution
+        F_dn: array(1..I) of real ! generator max downwards frequency response contribution
+        F_up_req: array(1..T) of mpvar ! system upwards frequency requirement
+        F_dn_req: array(1..T) of mpvar ! system downwards frequency requirement
+        rho: array(1..I) of real ! slope of frequency response provision of unit i
+        f_up: array(1..I) of array(1..T) of mpvar ! upwards frequency response contribution of unit i
+        f_dn: array(1..I) of array(1..T) of mpvar ! downwards frequency response contribution of unit i
+
+        F_up_tot_in: array(1..T) of real ! initialized freq req
+        F_dn_tot_in: array(1..T) of real ! initialized freq req
+
+        cold_freq_up: array(1..T) of mpvar ! upwards freq contribution of cold appliances
+        cold_freq_dn: array(1..T) of mpvar ! downards freq contributuion of cold appliances
+        cold_DSR: real ! amount of freq resp cold appliances can provide on the hour
+        cold_appliances: real ! number of cold appliances in system
+        cold_duty: real ! duty cycle of each cold appliance
+
+        wet_DSR: array(1..T) of real ! % of total system demand at time which is due to wet appliances which provide DSR
+        wet_DSR_dom: array(1..T) of real ! % of total domestic demand at time which is due to wet appliances which provide DSR
+        !HOURS_wet: integer ! period over which wet DSR can be shifted
+        wet_shift: array(1..T) of array(1..HOURS_wet) of mpvar ! amount of wet appliance load shifted
+        wet_res: array(1..T) of mpvar ! amount of wet appliance load kept as reserve
+
+        EV_DSR: array(1..T) of real ! % of total system demand at time which is due to EV appliances which provide DSR
+        !HOURS_EV: integer ! period over which EV DSR can be shifted
+        EV_shift: array(1..T) of array(1..HOURS_EV) of mpvar ! amount of EV load shifted
+        EV_res: array(1..T) of mpvar ! amount of EV load kept as reserve
+        EV_freq_up: array(1..T) of mpvar ! upwards freq response of EV load
+        EV_alpha: real ! percentage of EV charging DSR services that can be used to provide frequency response
+
+        TOTAL_ENERGY: array(1..T) of mpvar ! total energy consumed at a time t
+
+        summer_start: integer ! summer start period
+        summer_end: integer ! summer end period
+
+        f_a: array(1..J) of real ! gradients of frequency response segments
+        f_b: array(1..J) of real ! intersects of frequency response segments
+
+        EV_Demand: array(1..T) of real ! EV demand at time t
+
+        stor_cap: real ! amount of storage capacity
+        alpha_charging_stor: real ! amount of storage charging stopped to provide frequency response
+        alpha_discharge_stor: real  ! amount of storage discharge to provide frequency response
+        stor_numb_hours_at_max_power: real ! number of hours that storage can produce electricity at maximum power (i.e. storage duration)
+        stor_eff: real ! storage efficiency as %
+        stor_generated: array(1..T) of mpvar ! amount of energy generated by storage at t
+        stor_consumed: array(1..T) of mpvar ! amount of energy consumed by storage at t
+        stor_energy_content: array(1..T) of mpvar ! energy content of storage t
+
+
+
+    end-declarations
+
+
+    ! Read data from spreadsheet blend.xls
+    initializations from "mmsheet.excel:GB_power_system_input_data_2030_FICO_new.xls"
+        [efficiency,B,A,C_start,CAPEX,Pmax_in,Pmin,resp_ratio,resp_max,V_up,V_dn,T_up_in,T_dn_in,must_run,emis_inc,emis_NL,emis_SU,max_ALF,Hi,F_up,F_dn,rho] as "[Generators$B4:X11]"
+        [Demand,EV_Demand] as "[Demand$A8:C8767]"
+        Capacity as "[Capacity$F3:G16]"
+        stor_cap as "[Capacity$G13]"
+        W as "[Wind_Gen$R6:S8765]"
+        S as "[Solar_Gen$F5:G8764]"
+        W_sd_half as "[Capacity$L3]"
+        W_sd_four as "[Capacity$L4]"
+        S_sd_half as "[Capacity$M3]"
+        S_sd_four as "[Capacity$M4]"
+        W_cap as "[Capacity$K3]"
+        S_cap as "[Capacity$K4]"
+        C_shed as "[Other_variables$C4]"
+        C_over as "[Other_variables$D4]"
+        summer_start as "[Other_variables$E4]"
+        summer_end as "[Other_variables$F4]"
+        [F_up_tot_in,F_dn_tot_in,wet_DSR_dom,wet_DSR,EV_DSR] as "[Other_variables$I4:N8763]"
+        cold_DSR as "[Other_variables$Q4]"
+        cold_appliances as "[Other_variables$T4]"
+        cold_duty as "[Other_variables$U4]"
+        EV_alpha as "[Other_variables$W6]"
+        [f_a,f_b] as "[Nadir$B6:D8]"
+        stor_numb_hours_at_max_power as "[Storage$C3]"
+        stor_eff as "[Storage$D3]"
+        alpha_charging_stor as "[Storage$E3]"
+        alpha_discharge_stor as "[Storage$E4]"
+
+
+    end-initializations
+    !writeln("n :", n)
+    !writeln("N_on :", N_on)
+    !N_on::[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[9,9,9,9],[0,0,0,0],[0,0,0,0]]
+    !N_off::[[0,0,0,0],[47,47,47,47],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[14,0,0,0],[39,0,0,0]]
+
+    N_on(1) :: [0,0,0,0]
+    N_on(2) :: [0,0,0,0]
+    N_on(3) :: [0,0,0,0]
+    N_on(4) :: [0,0,0,0]
+    N_on(5) :: [0,0,0,0]
+    N_on(6) :: [0,0,0,0]
+    N_on(7) :: [0,0,0,0]
+    N_on(8) :: [0,0,0,0]
+
+    N_off(1) :: [0,0,0,0]
+    N_off(2) :: [0,0,0,0]
+    N_off(3) :: [0,0,0,0]
+    N_off(4) :: [0,0,0,0]
+    N_off(5) :: [0,0,0,0]
+    N_off(6) :: [0,0,0,0]
+    N_off(7) :: [0,0,0,0]
+    N_off(8) :: [0,0,0,0]
+
+
+    ! divide capacity by Pmax (i.e. 500)
+    ! round up to get number
+    ! divide number of generators
+    forall(i in GEN) do
+        Nsynch(i) := round(Capacity(i)*1000/Pmax_in(i))
+    end-do
+    forall(i in GEN) do
+        if (Nsynch(i) = 0) then
+            Pmax(i) := Pmax_in(i)
+        else
+            Pmax(i) := Capacity(i)*1000/Nsynch(i)
+        end-if
+    end-do
+
+    ! construct frequency response requirements
+    forall (t in TIME, j in SEG) do
+        F_up_req(t) >= f_a(j) * sum(i in GEN) p(i,t) + f_b(j)
+        F_dn_req(t) = F_dn_tot_in(t)
+    end-do
+
+
+
+    ! n can take value depending on number of generators of type i
+    forall(i in GEN)
+        forall(t in TIME) do
+            n(i,t) is_partint Nsynch(i)
+            n(i,t) <= Nsynch(i)
+            n(i,t) >= 0
+    end-do
+
+    ! Must run
+    forall(i in GEN)
+        forall(t in TIME) do
+            n(i,t) >= must_run(i) * Nsynch(i)
+    end-do
+
+    forall(i in GEN, t in TIME) do
+        R_up_new(t) := sqrt(sys_Pmax^2 + (3*0.01*Demand(t))^2 + (3*S(t)*S_sd_four*1000)^2 + (3*W(t)*W_sd_four*1000)^2)
+        R_dn_new(t) := sqrt((3*0.01*Demand(t))^2 + (3*S(t)*S_sd_four*1000)^2 + (3*W(t)*W_sd_four*1000)^2)
+        !R_dn_new(t) := sqrt((3*0.01*Demand(t))^2)
+    end-do
+
+    ! convert inputs to integers for min/max-list functions
+    forall(i in GEN) do
+        T_up(i) := integer(T_up_in(i))
+        T_dn(i) := integer(T_dn_in(i))
+        I_up(i) := integer(I_up_in(i))
+        I_dn(i) := integer(I_dn_in(i))
+    end-do
+
+    ! min up/down times
+    forall(i in GEN) do
+        v_on(i,1) >= n(i,1) - N(i)
+        v_off(i,1) >= N(i) - n(i,1)
+    end-do
+    forall(i in GEN, t in 2..T) do
+        v_on(i,t) >= n(i,t) - n(i,t-1)
+        v_off(i,t) >= n(i,t-1) - n(i,t)
+    end-do
+    forall(i in GEN)
+        forall(t in 1..T_up(i)-1) do
+            n(i,t) >= (sum(tau in 1..T_up(i)-t) N_on(i,tau)) + (sum(tau in 1..t-1) v_on(i,tau))
+    end-do
+    forall(i in GEN)
+        forall(t in 1..T_dn(i)-1)do
+            n(i,t) <= Nsynch(i) - (sum(tau in 1..T_dn(i)-t) N_off(i,tau)) - (sum(tau in 1..t-1) v_off(i,tau))
+    end-do
+
+
+    ! wind power balance
+    forall(t in TIME) do Wind_balance(t) :=
+        1000*W(t) = wg(t) + wc(t)
+    end-do
+
+    ! solar power balance
+    forall(t in TIME) do Solar_balance(t) :=
+        1000*S(t) = sg(t) + sc(t)
+    end-do
+
+    forall(t in TIME) do
+        wg(t) >= 0
+        wc(t) >= 0
+        sg(t) >= 0
+        sc(t) >= 0
+    end-do
+
+
+    ! NEW DSR balance: frequency response and reserve balancing
+    forall(t in TIME) do
+        EV_DSR(t) * EV_Demand(t) >= sum(h in 1..HOURS_EV) (EV_shift(t,h)) +  EV_freq_up(t)
+        EV_DSR(t) * EV_Demand(t) * EV_alpha >= EV_freq_up(t)
+    end-do
+
+    ! NEW consumed-shifted-demand balance
+    forall(t in 1..T-HOURS_EV)
+        Demand(t) = Consumed(t) + sum(k in 1..HOURS_EV) (EV_shift(t,k))
+    forall(q in T-HOURS_EV+1..T-1)
+        Demand(q) = Consumed(q) + sum(h in 1..(T-q)) (EV_shift(q,h))
+    Dem_fin_bal(T) := Demand(T) = Consumed(T)
+
+
+    !NEW: demand-balance constraint function
+
+    forall(t in TIME)
+        balance(t) := sum(i in GEN) ((p(i,t))) + wg(t) + sg(t) + load_shed(t) - over_slack(t) = TOTAL_ENERGY(t)
+
+
+    TOTAL_ENERGY(1) = Consumed(1)
+    forall(q in 2..HOURS_EV)
+        TOTAL_ENERGY(q) = Consumed(q) + sum(tau in 1..q-1) (EV_shift(q-tau,tau))
+    forall(t in HOURS_EV+1..T)
+        TOTAL_ENERGY(t) = Consumed(t) + sum(tau in 1..HOURS_EV) (EV_shift(t-tau,tau))
+
+
+    ! max annual load factor (CONSERVATIVE: total P_out for generators over year must be less than total annual load
+    forall(i in GEN | i <> 6)
+        sum(t in TIME) p(i,t) <= Pmax(i) * max_ALF(i) * T * Nsynch(i)
+
+    ! nuclear ALF summer constraint
+    sum(t in summer_start..summer_end) p(NUC,t) <= Pmax(NUC) * (Pmax(NUC) * Nsynch(NUC) * ((max_ALF(NUC) * T) - ((T - summer_end) + (summer_start - 1))) / (summer_end - (summer_start-1))) * (summer_end - (summer_start - 1)) * Nsynch(NUC)
+
+
+
+    ! system inertia constraint
+    forall(t in TIME)
+        (sum(i in GEN) (Hi(i) * Pmax(i) * n(i,t))) / f0 >= sys_Pmax / (2 * ROCOF_max)
+
+
+
+
+    ! MSG & MRC constraint function
+    forall(i in GEN, t in TIME) do
+        p(i,t) >= n(i,t) * Pmin(i) * Pmax(i)
+        p(i,t) <= n(i,t) * Pmax(i)
+    end-do
+
+
+
+    ! startup cost function
+    forall(i in GEN) do
+        H(i,1) >= C_start(i) * (n(i,1) - N(i))
+    end-do
+    forall(i in GEN)
+        forall(t in 2..T) do
+            H(i,t) >= C_start(i) * (n(i,t) - n(i,t-1))
+    end-do
+
+
+
+    ! start up emissions
+    forall(i in GEN) do
+        e_H(i,1) >= emis_SU(i) * (n(i,1) - N(i))
+    end-do
+    forall(i in GEN, t in 2..T) do
+        e_H(i,t) >= emis_SU(i) * (n(i,t) - n(i,t-1))
+    end-do
+
+
+    ! ramping constraints, Pmin <= V_up & Pmin <= V_dn
+    forall(i in RAMP_1, t in 2..T) do
+        (p(i,t)) - (p(i,t-1)) <= n(i,t) * V_up(i) * Pmax(i) * unit_t;
+        (p(i,t)) - (p(i,t-1)) <= v_on(i,t) * V_up(i) * Pmax(i) * unit_t + (Pmax(i) * n(i,t-1) - (p(i,t-1)));
+        (p(i,t-1)) - (p(i,t)) <= n(i,t-1) * V_dn(i) * Pmax(i) * unit_t;
+    end-do
+    ! ramping constraints, Pmin > V_up & Pmin > V_dn
+    forall(i in RAMP_2, t in 2..T) do
+        (p(i,t)) - (p(i,t-1)) <= n(i,t-1) * V_up(i) * Pmax(i) * unit_t + v_on(i,t) * Pmin(i) * Pmax(i);
+        (p(i,t)) - (p(i,t-1)) <= v_on(i,t) * Pmin(i) * Pmax(i) + (Pmax(i) * n(i,t-1) - (p(i,t-1)));
+        (p(i,t-1)) - (p(i,t)) <= n(i,t-1) * V_dn(i) * Pmax(i) * unit_t + v_off(i,t) * Pmin(i) * Pmax(i);
+    end-do
+
+    ! generator reserve contributions
+    ! req_time is time in which reserve request demand must be delivered
+    forall(i in GEN, t in TIME) do
+        r_up(i,t) <= Pmax(i) * n(i,t) - (p(i,t))
+        r_dn(i,t) <= (p(i,t)) - Pmin(i) * Pmax(i) * n(i,t)
+        r_up(i,t) <= n(i,t) * V_up(i) * Pmax(i) * res_time
+        r_dn(i,t) <= n(i,t) * V_dn(i) * Pmax(i) * res_time
+    end-do
+
+    ! total system reserve constraints
+    forall(t in TIME) do
+        up_res(t):= sum(i in GEN) (r_up(i,t)) >= R_up_new(t)
+        dn_res(t):= sum(i in GEN) (r_dn(i,t)) >= R_dn_new(t)
+    end-do
+
+
+    ! total system frequency response constraints
+    forall(t in TIME) do
+        up_freq(t) := sum(i in GEN) f_up(i,t) + EV_freq_up(t) >= F_up_req(t)
+        dn_freq(t) := sum(i in GEN) f_dn(i,t) >= F_dn_req(t)
+    end-do
+
+
+    ! individual unit frequency response contributions
+    forall(i in GEN, t in TIME) do
+        f_up(i,t) <= n(i,t) * F_up(i)
+        f_up(i,t) <= rho(i) * (n(i,t) * Pmax(i) - p(i,t) - r_up(i,t))
+        f_dn(i,t) <= n(i,t) * F_dn(i)
+        f_dn(i,t) <= rho(i) * (p(i,t) - r_dn(i,t) - n(i,t) * Pmin(i) * Pmax(i))
+    end-do
+
+
+
+
+    ! objective function
+    Return:= sum(t in TIME) (sum(i in GEN) (H(i,t) + (A(i) * n(i,t) + (p(i,t) * B(i)))) + C_shed * load_shed(t) + C_over * over_slack(t))
+
+    setparam("XPRS_MIPRELSTOP",0.005)
+
+    setparam("XPRS_VERBOSE", true)
+    ! Solve the problem
+    minimize(XPRS_BAR,Return)
+
+
+
+
+    if(POST_SOLVE = 1) then
+        forall(i in GEN, t in TIME) do
+            n(i,t) is_continuous
+            n(i,t) = round(getsol(n(i,t)))
+        end-do
+
+        minimize(Return)
+
+        forall(t in TIME) do
+            dual_balance(t) := getdual(balance(t))
+
+            freq_up_dual(t) := getdual(up_freq(t))
+            freq_dn_dual(t) := getdual(dn_freq(t))
+            res_up_dual(t) := getdual(up_res(t))
+            res_dn_dual(t) := getdual(dn_res(t))
+        end-do
+
+
+    initializations to "mmsheet.excel:" + Output
+            ! costs
+            evaluation of array(t in TIME) (sum(i in GEN) (H(i,t).sol + (A(i) * n(i,t).sol + (p(i,t).sol * B(i)))) + C_shed * load_shed(t).sol + C_over * over_slack(t).sol) as "grow;noindex;[Cost$C4]"
+            dual_balance as "grow;noindex;[Cost$D4]"
+            evaluation of array(t in TIME) (H(6,t).sol + (A(6) * n(6,t).sol + (p(6,t).sol * B(6)))) as "grow;noindex;[Cost$G4]"
+            evaluation of array(t in TIME) (H(2,t).sol + (A(2) * n(2,t).sol + (p(2,t).sol * B(2)))) as "grow;noindex;[Cost$H4]"
+            evaluation of array(t in TIME) (H(7,t).sol + (A(7) * n(7,t).sol + (p(7,t).sol * B(7)))) as "grow;noindex;[Cost$I4]"
+            evaluation of array(t in TIME) (H(8,t).sol + (A(8) * n(8,t).sol + (p(8,t).sol * B(8)))) as "grow;noindex;[Cost$J4]"
+            ! generation
+            evaluation of array(t in TIME) p(6,t).sol as "grow;noindex;[Generation$B4]"
+            evaluation of array(t in TIME) p(2,t).sol as "grow;noindex;[Generation$C4]"
+            evaluation of array(t in TIME) p(7,t).sol as "grow;noindex;[Generation$D4]"
+            evaluation of array(t in TIME) p(8,t).sol as "grow;noindex;[Generation$E4]"
+            evaluation of array(t in TIME) wg(t).sol as "grow;noindex;[Generation$F4]"
+            evaluation of array(t in TIME) sg(t).sol as "grow;noindex;[Generation$G4]"
+
+            ! wind
+            W as "grow;noindex;[Wind$C4]"
+            evaluation of array(t in TIME) wg(t).sol as "grow;noindex;[Wind$D4]"
+            evaluation of array(t in TIME) wc(t).sol as "grow;noindex;[Wind$E4]"
+            ! solar
+            S as "grow;noindex;[Solar$C4]"
+            evaluation of array(t in TIME) sg(t).sol as "grow;noindex;[Solar$D4]"
+            evaluation of array(t in TIME) sc(t).sol as "grow;noindex;[Solar$E4]"
+            !emissions
+            evaluation of array(t in TIME) (e_H(6,t).sol + (emis_NL(6) * n(6,t).sol + (p(6,t).sol * emis_inc(6)))) as "grow;noindex;[Emissions$C4]"
+            evaluation of array(t in TIME) (e_H(2,t).sol + (emis_NL(2) * n(2,t).sol + (p(2,t).sol * emis_inc(2)))) as "grow;noindex;[Emissions$D4]"
+            evaluation of array(t in TIME) (e_H(7,t).sol + (emis_NL(7) * n(7,t).sol + (p(7,t).sol * emis_inc(7)))) as "grow;noindex;[Emissions$E4]"
+            evaluation of array(t in TIME) (e_H(8,t).sol + (emis_NL(8) * n(8,t).sol + (p(8,t).sol * emis_inc(8)))) as "grow;noindex;[Emissions$F4]"
+
+            !frequency up
+            evaluation of array(t in TIME) f_up(6,t).sol as "grow;noindex;[Frequency$C4]" !
+            evaluation of array(t in TIME) f_up(2,t).sol as "grow;noindex;[Frequency$D4]" !
+            evaluation of array(t in TIME) f_up(7,t).sol as "grow;noindex;[Frequency$E4]" !
+            evaluation of array(t in TIME) f_up(8,t).sol as "grow;noindex;[Frequency$F4]" !
+            evaluation of array(t in TIME) EV_freq_up(t).sol as "grow;noindex;[Frequency$G4]" !
+            freq_up_dual as "grow;noindex;[Frequency$H4]" ! freq_up_dual
+            !frequency dn
+            evaluation of array(t in TIME) f_dn(6,t).sol as "grow;noindex;[Frequency$I4]" !
+            evaluation of array(t in TIME) f_dn(2,t).sol as "grow;noindex;[Frequency$J4]" !
+            evaluation of array(t in TIME) f_dn(7,t).sol as "grow;noindex;[Frequency$K4]" !
+            evaluation of array(t in TIME) f_dn(8,t).sol as "grow;noindex;[Frequency$L4]" !
+            freq_dn_dual as "grow;noindex;[Frequency$M4]"
+            !reserve up
+            evaluation of array(t in TIME) r_up(6,t).sol as "grow;noindex;[Reserve$C4]" !
+            evaluation of array(t in TIME) r_up(2,t).sol as "grow;noindex;[Reserve$D4]" !
+            evaluation of array(t in TIME) r_up(7,t).sol as "grow;noindex;[Reserve$E4]" !
+            evaluation of array(t in TIME) r_up(8,t).sol as "grow;noindex;[Reserve$F4]" !
+            res_up_dual as "grow;noindex;[Reserve$G4]"
+
+            !reserve dn
+            evaluation of array(t in TIME) r_dn(6,t).sol as "grow;noindex;[Reserve$H4]" !
+            evaluation of array(t in TIME) r_dn(2,t).sol as "grow;noindex;[Reserve$I4]" !
+            evaluation of array(t in TIME) r_dn(7,t).sol as "grow;noindex;[Reserve$J4]" !
+            evaluation of array(t in TIME) r_dn(8,t).sol as "grow;noindex;[Reserve$K4]" !
+            res_dn_dual as "grow;noindex;[Reserve$L4]"
+
+            ! shifting
+            Demand as "grow;noindex;[Shifting$B4]" !
+            evaluation of array(t in TIME) Consumed(t).sol as "grow;noindex;[Shifting$C4]" !
+            evaluation of array(t in TIME) TOTAL_ENERGY(t).sol as "grow;noindex;[Shifting$D4]" !
+            evaluation of array(t in TIME) (sum(h in 1..HOURS_EV) EV_shift(t,h).sol) as "grow;noindex;[Shifting$F4]" !
+
+            ! shedding
+            evaluation of array(t in TIME) load_shed(t).sol as "grow;noindex;[Shedding$C4]" !
+            evaluation of array(t in TIME) over_slack(t).sol as "grow;noindex;[Shedding$D4]" !
+
+
+    end-initializations
+    end-if
+
+end-model
